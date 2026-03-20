@@ -1,1 +1,5 @@
-websockets
+flask
+flask-socketio
+flask-cors
+eventlet
+Pillow
