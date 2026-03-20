@@ -3,7 +3,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python server.py",
+    "startCommand": "python ws_server.py",
     "restartPolicyType": "ON_FAILURE"
   }
 }
