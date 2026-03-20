@@ -5,6 +5,7 @@ import sqlite3
 import os
 import uuid
 import io
+import hashlib
 from datetime import datetime
 import base64
 
@@ -12,7 +13,6 @@ app = Flask(__name__)
 CORS(app, origins="*")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# База данных
 conn = sqlite3.connect('chat.db', check_same_thread=False)
 c = conn.cursor()
 
@@ -20,6 +20,7 @@ c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE,
+    password_hash TEXT,
     status TEXT,
     last_seen TEXT
 )''')
@@ -48,29 +49,52 @@ conn.commit()
 active_users = {}
 user_sockets = {}
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
 @app.route('/')
 def index():
     return 'КентоЧат сервер работает!'
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'error': 'Ник и пароль нужны'}), 400
+    
+    user_id = str(uuid.uuid4())
+    password_hash = hash_password(password)
+    
+    try:
+        c.execute("INSERT INTO users (id, username, password_hash, status, last_seen) VALUES (?, ?, ?, ?, ?)",
+                  (user_id, username, password_hash, 'offline', datetime.now().isoformat()))
+        conn.commit()
+        return jsonify({'success': True, 'user_id': user_id, 'username': username})
+    except sqlite3.IntegrityError:
+        return jsonify({'error': 'Пользователь уже существует'}), 400
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
     username = data.get('username')
+    password = data.get('password')
     
-    if not username:
-        return jsonify({'error': 'Ник нужен'}), 400
+    if not username or not password:
+        return jsonify({'error': 'Ник и пароль нужны'}), 400
     
-    user_id = str(uuid.uuid4())
+    c.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,))
+    row = c.fetchone()
     
-    try:
-        c.execute("INSERT INTO users (id, username, status, last_seen) VALUES (?, ?, ?, ?)",
-                  (user_id, username, 'offline', datetime.now().isoformat()))
-        conn.commit()
-        return jsonify({'user_id': user_id, 'username': username})
-    except sqlite3.IntegrityError:
-        c.execute("SELECT id FROM users WHERE username = ?", (username,))
-        user_id = c.fetchone()[0]
-        return jsonify({'user_id': user_id, 'username': username})
+    if row and row[1] == hash_password(password):
+        return jsonify({'success': True, 'user_id': row[0], 'username': username})
+    elif row:
+        return jsonify({'error': 'Неверный пароль'}), 401
+    else:
+        # Если пользователь не существует, предлагаем зарегистрироваться
+        return jsonify({'error': 'Пользователь не найден, сначала зарегистрируйтесь'}), 404
 
 @app.route('/api/users', methods=['GET'])
 def get_users():
@@ -107,7 +131,6 @@ def upload_file():
         filename = data.get('filename', 'file')
         mime_type = data.get('mime_type', 'application/octet-stream')
         
-        # Убираем префикс data:image/jpeg;base64, если есть
         if ',' in file_data:
             file_data = file_data.split(',')[1]
         
@@ -185,6 +208,11 @@ def handle_private_message(data):
     if to_user in user_sockets:
         emit('new_message', msg_data, to=user_sockets[to_user])
     emit('new_message', msg_data, to=request.sid)
+
+@socketio.on('typing')
+def handle_typing(data):
+    username = data.get('user')
+    emit('user_typing', {'user': username}, broadcast=True, include_self=False)
 
 @socketio.on('disconnect')
 def handle_disconnect():
